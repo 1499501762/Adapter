@@ -6,8 +6,10 @@ import org.objectweb.asm.Handle;
 import org.objectweb.asm.Opcodes;
 import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.*;
+import org.sinytra.adapter.env.ctx.MethodHelper;
 import org.sinytra.adapter.env.ctx.MixinContext;
 import org.sinytra.adapter.env.ctx.TargetPair;
+import org.sinytra.adapter.util.MethodQualifier;
 import org.sinytra.adapter.env.util.MixinAnnotations;
 import org.sinytra.adapter.patch.Recipe;
 import org.sinytra.adapter.patch.TxResult;
@@ -75,6 +77,41 @@ public class ExtractMixinProcessor implements Processor {
         }
 
         candidates.handleUpdates().forEach(c -> c.accept(generatedTarget));
+
+        // The member may have moved to a STATIC method on the new target - a Fabric method mapped onto a
+        // NeoForge static hook. Mixin rejects that combination outright and the error is fatal:
+        //
+        //   InvalidInjectionException: non-static callback method ... targets a static method which is not
+        //   supported
+        //
+        // StaticAccessProcessor cannot catch this: it runs before extraction, when the callback still matches
+        // its original target. Sync the modifier here, right after the move, on the callback itself only.
+        MethodQualifier movedTarget = recipe.dirty().getTargetMethod();
+        TargetPair movedPair = movedTarget == null ? null
+            : context.methods().findOwnMethodPair(context.dirtyLookup(), movedTarget);
+        if (movedPair != null && MethodHelper.isStatic(movedPair.methodNode()) && !MethodHelper.isStatic(methodNode)) {
+            context.recordCtxAudit("Made extracted callback static to match static target %s", movedTarget.asDescriptor());
+            methodNode.access |= Opcodes.ACC_STATIC;
+
+            // The callback keeps its original body, and as an instance method that body reserved local 0 for the
+            // receiver - its parameters sat at 1..n. Now that the receiver is gone everything shifts down by one,
+            // exactly as StaticAccessProcessor does in the opposite direction ("Remove static"). Without this
+            // shift Mixin inlines a body whose locals no longer line up and the game dies with
+            // "VerifyError: Bad local variable type" (locals[3] = top).
+            if (methodNode.localVariables != null) {
+                for (LocalVariableNode lvn : methodNode.localVariables) {
+                    lvn.index--;
+                }
+                methodNode.localVariables.removeIf(lvn -> lvn.index < 0);
+            }
+            for (AbstractInsnNode insn : methodNode.instructions) {
+                if (insn instanceof VarInsnNode varInsn) {
+                    varInsn.var--;
+                } else if (insn instanceof IincInsnNode iincInsn) {
+                    iincInsn.var--;
+                }
+            }
+        }
 
         // Take care of captured locals
         PatchResult result = PatchResult.PASS;
@@ -376,3 +413,5 @@ public class ExtractMixinProcessor implements Processor {
         return PatchResult.COMPUTE_FRAMES;
     }
 }
+
+
