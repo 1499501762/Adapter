@@ -3,6 +3,8 @@ package org.sinytra.adapter.patch.resolver.target;
 import com.mojang.datafixers.util.Pair;
 import org.jetbrains.annotations.Nullable;
 import org.objectweb.asm.Handle;
+import org.objectweb.asm.Type;
+import org.objectweb.asm.tree.AnnotationNode;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.InvokeDynamicInsnNode;
@@ -35,6 +37,7 @@ public class TargetMethodSubResolvers {
 
         ClassNode targetClass = context.dirtyLookup().getClass(recipe.clean().getTargetClass()).orElse(null);
         if (targetClass == null) return null;
+
 
         List<MethodNode> candidateMethods = targetClass.methods.stream()
             .filter(m -> MethodAnalyzer.isLambda(m) && m.desc.equals(cleanQualifier.desc()))
@@ -79,6 +82,17 @@ public class TargetMethodSubResolvers {
      * Handle cases where the target instructions have been moved into a lambda inside the target method
      */
     public static final SubResolver MOVED_INTO_LAMBDA = (MixinContext context, Recipe recipe) -> {
+        // Decline the relocation for handlers that use mixinextras parameter sugar (@Local / @Share / ...).
+        // Measured with create-fly's ItemStackMixin#cacheState: relocating its target into the lambda made
+        // Mixin fail with
+        //   InjectionError: Critical injection failure ... (0/1) succeeded. Scanned 0 target(s)
+        //   Suppressed: SugarApplicationException: Failed to validate sugar @Local Item
+        // which is FATAL and cannot be stripped by the safety net, so the whole server refused to start.
+        // Without the relocation the handler fails cleanly and is stripped instead (feature missing, server up).
+        // The relocation itself is a supported feature (see DynamicMixinPatchTest#testChangeTargetToLambdaInPipeline),
+        // so this is deliberately narrow: only the shape that is known to break is declined.
+        if (usesMixinExtrasSugar(context)) return null;
+
         MethodQualifier cleanQualifier = recipe.clean().getTargetMethod();
 
         TargetPair target = context.methods().findOwnMethodPair(context.dirtyLookup(), cleanQualifier);
@@ -87,8 +101,16 @@ public class TargetMethodSubResolvers {
         for (AbstractInsnNode insn : target.methodNode().instructions) {
             // Find lambda invocations and search for target insns inside the lambda
             if (insn instanceof InvokeDynamicInsnNode indy && indy.bsmArgs.length > 1 && indy.bsmArgs[1] instanceof Handle handle) {
+                // Keep the handle's OWNER. Parsing only the name and letting findOwnMethodPair guess the
+                // declaring class made it resolve a same-named lambda belonging to a DIFFERENT class - the
+                // mixin's target class, which is where an owner-less lookup starts. The resulting target then
+                // had nothing to do with the @At target, so Mixin could never apply it and the whole server
+                // died at startup ("Critical injection failure"). Reference case: create-fly's
+                // ItemStackMixin#cacheState, whose @At targets Item#useOn but which was re-pointed at
+                // ItemStack's own lambda$useOn$0. See 12-issue草案.md entry 17.
                 TargetPair lambda = MethodQualifier.parse(handle.getName())
-                    .map(q -> context.methods().findOwnMethodPair(context.dirtyLookup(), q))
+                    .map(q -> context.methods().findOwnMethodPair(context.dirtyLookup(),
+                        new MethodQualifier(Type.getObjectType(handle.getOwner()).getDescriptor(), q.name(), q.desc())))
                     .orElse(null);
                 if (lambda == null) return null;
 
@@ -168,4 +190,36 @@ public class TargetMethodSubResolvers {
         TargetPair pair = context.methods().findOwnMethodPair(context.cleanLookup(), MethodQualifier.create(dirty));
         return (pair == null || !AdapterUtil.isDeprecated(pair.methodNode())) && AdapterUtil.isDeprecated(dirty);
     }
+
+    /**
+     * Whether any parameter of the handler carries a mixinextras sugar annotation (@Local, @Share, ...).
+     * <p>
+     * Used to keep {@link #MOVED_INTO_LAMBDA} away from handlers whose sugar has to be validated against the
+     * injection point: moving the target into a lambda makes that validation fail fatally at runtime.
+     */
+    private static boolean usesMixinExtrasSugar(MixinContext context) {
+        MethodNode method = context.methodNode();
+        return hasSugar(method.visibleParameterAnnotations) || hasSugar(method.invisibleParameterAnnotations);
+    }
+
+    private static boolean hasSugar(java.util.List<AnnotationNode>[] parameterAnnotations) {
+        if (parameterAnnotations == null) {
+            return false;
+        }
+        for (java.util.List<AnnotationNode> annotations : parameterAnnotations) {
+            if (annotations == null) {
+                continue;
+            }
+            for (AnnotationNode annotation : annotations) {
+                if (annotation.desc != null && annotation.desc.startsWith("Lcom/llamalad7/mixinextras/")) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
 }
+
+
+
+
