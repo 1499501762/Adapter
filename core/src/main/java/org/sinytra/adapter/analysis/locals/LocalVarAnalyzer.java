@@ -9,6 +9,7 @@ import org.objectweb.asm.Type;
 import org.objectweb.asm.tree.*;
 import org.sinytra.adapter.analysis.params.EnhancedParamsDiff;
 import org.sinytra.adapter.analysis.params.ParamsDiffSnapshot;
+import org.sinytra.adapter.env.ann.AtData;
 import org.sinytra.adapter.env.ctx.LocalVariable;
 import org.sinytra.adapter.env.ctx.MixinContext;
 import org.sinytra.adapter.env.ctx.TargetPair;
@@ -26,11 +27,21 @@ public final class LocalVarAnalyzer {
 
     @Nullable
     public static CapturedLocalsInfo getCapturedLocals(MixinContext context, TargetPair dirtyTarget) {
+        return getCapturedLocals(context, dirtyTarget, null);
+    }
+
+    /**
+     * @param atData the effective {@code @At} data, or {@code null} to fall back to the annotation as written.
+     *               Adaptation may have moved the injection site, in which case the locals available there
+     *               have to be read from the new one.
+     */
+    @Nullable
+    public static CapturedLocalsInfo getCapturedLocals(MixinContext context, TargetPair dirtyTarget, @Nullable AtData atData) {
         AdapterUtil.CapturedLocals capturedLocals = AdapterUtil.getCapturedLocals(context, dirtyTarget);
         if (capturedLocals == null) return null;
 
         // Get available local variables at the injection point in the target method
-        List<LocalVariable> available = context.methods().getTargetMethodLocals(capturedLocals.target());
+        List<LocalVariable> available = context.methods().getTargetMethodLocals(capturedLocals.target(), atData);
         if (available == null) return null;
 
         List<Type> availableTypes = available.stream().map(LocalVariable::type).toList();

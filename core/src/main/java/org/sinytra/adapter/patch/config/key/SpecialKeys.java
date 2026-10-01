@@ -15,6 +15,12 @@ public final class SpecialKeys {
     public static final PropertyKey<Integer> EXTRACT_ORIGIN_PARAM = PropertyKey.create("_extract_origin_param");
     public static final PropertyKey<Consumer<InstructionAdapter>> REDIRECT_ADAPTER = PropertyKey.create("_redirect_adapter");
     public static final PropertyKey<Boolean> STATIC = PropertyKey.create("_static");
+    /**
+     * Set by {@code LocalCaptureUpgradeTransformer} once it has re-derived a {@code locals = LocalCapture...}
+     * handler's capture list. {@code Patcher} uses it to tell an upgraded capture apart from one it could
+     * not verify, instead of inferring that from the audit trail.
+     */
+    public static final PropertyKey<Boolean> LOCALS_UPGRADED = PropertyKey.create("_locals_upgraded");
 
     private SpecialKeys() {
     }
