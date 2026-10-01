@@ -72,6 +72,21 @@ public class Patcher {
         return result;
     }
 
+    /**
+     * See PipelineMethodTransformer#skip: every "give up quietly" exit must record the mixin,
+     * otherwise it disappears from the audit trail and the jar is reported as compatible.
+     */
+    private static PatchResult skip(MixinContext context, org.sinytra.adapter.patch.config.Configuration config, String reason) {
+        context.environment().auditTrail().recordResult(context, config, org.sinytra.adapter.env.ctx.AuditTrail.Match.NONE);
+        try {
+            context.recordCtxAudit("Skipped mixin: %s", reason);
+        } catch (RuntimeException ignored) {
+            // Not every exit runs inside an audit frame (pushAudit/popAudit). recordResult above is
+            // what actually makes the skip visible; the reason is best-effort.
+        }
+        return PatchResult.PASS;
+    }
+
     private PatchResult processMixin(ClassNode classNode, ClassTarget classTarget, PatchContext patchContext, MixinParser.MixinMethodHandle mixin) {
         MethodQualifier target = mixin.properties().getProperty(MixinKeys.TARGET_METHOD).orElse(null);
         if (target == null) return PatchResult.PASS;
@@ -104,7 +119,7 @@ public class Patcher {
         TxResult preResult = mixinType.preProcess(mixinContext, configuration, mixinContext.getResolvers(), mixinContext.getProcessors());
         if (preResult == TxResult.FAIL) {
             LOGGER.debug(MIXINPATCH, "Skipping mixin {} due to failed preProcess", mixinId);
-            return PatchResult.PASS;
+            return skip(mixinContext, configuration, "failed preProcess");
         }
 
         // << RUN LOADED PHASE
@@ -118,7 +133,7 @@ public class Patcher {
         // Validate clean config
         if (!configuration.validate()) {
             LOGGER.debug(MIXINPATCH, "Skipping mixin {} due to invalid CLEAN config", mixinId);
-            return PatchResult.PASS;
+            return skip(mixinContext, configuration, "invalid CLEAN config");
         }
         
         // Temporarily set this to a high number for frame analysis to work
