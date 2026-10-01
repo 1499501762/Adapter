@@ -22,6 +22,9 @@ public class InjectionPointResolver extends CompoundResolver {
         addSubResolver(InjectionPointSubResolvers.REPLACED_TYPE);
         addSubResolver(InjectionPointSubResolvers.EXTRACTED_CALL);
         addSubResolver(InjectionPointSubResolvers.EXTRACTED_CODEPATH_CALL);
+        // Last on purpose: this is the most structural guess of the lot (the member moved to a different
+        // class entirely), so it only gets a turn once every narrower strategy has declined.
+        addSubResolver(new RelocatedMemberSubResolver());
     }
 
     @Override
