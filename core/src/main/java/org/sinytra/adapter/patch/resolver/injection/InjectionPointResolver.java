@@ -2,6 +2,7 @@ package org.sinytra.adapter.patch.resolver.injection;
 
 import org.jetbrains.annotations.Nullable;
 import org.objectweb.asm.Type;
+import org.spongepowered.asm.mixin.injection.points.BeforeConstant;
 import org.objectweb.asm.tree.AbstractInsnNode;
 import org.sinytra.adapter.env.ctx.MixinContext;
 import org.sinytra.adapter.patch.Recipe;
@@ -44,6 +45,19 @@ public class InjectionPointResolver extends CompoundResolver {
 
         // Try reusing the original
         List<AbstractInsnNode> insns = context.methods().findInjectionTargetInsns(dirtyTarget);
+        if (insns.isEmpty() && context.methodAnnotation().getNested("constant").isPresent()) {
+            // @ModifyConstant has no @At: its injection point IS the constant. The @At-based lookup above can
+            // therefore never match it, and the whole resolver reported "failed resolver InjectionPointResolver"
+            // even after the target method had been retargeted to where the constant moved. Ask the constant
+            // point instead. (Reference case: carpet's @ModifyConstant(intValue = 16) on Level#setBlock, whose
+            // code NeoForge moved into Level#markAndNotifyBlock.)
+            insns = context.methods().computeInjectionTargetInsns(
+                dirtyTarget,
+                () -> context.methodAnnotation().getNested("constant").orElse(null),
+                (ctx, h) -> new BeforeConstant(ctx, h.unwrap(), Type.getReturnType(context.methodNode().desc).getDescriptor()),
+                false
+            );
+        }
         if (!insns.isEmpty()) {
             return dirty.copyClean()
                 .inheritAtData();
@@ -52,3 +66,4 @@ public class InjectionPointResolver extends CompoundResolver {
         return null;
     }
 }
+
