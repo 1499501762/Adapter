@@ -8,8 +8,8 @@ import org.sinytra.adapter.util.provider.ClassLookup;
 import org.sinytra.adapter.util.provider.MixinClassLookup;
 
 import java.util.Collection;
-import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 
 public final class PatchEnvironmentImpl implements PatchEnvironment {
     private final RefmapHolder refmapHolder;
@@ -21,7 +21,10 @@ public final class PatchEnvironmentImpl implements PatchEnvironment {
     private final AuditTrail auditTrail;
     private final @Nullable Collection<String> pkgNamespaces;
     
-    private final Map<ClassLookup, InheritanceHandler> inheritanceHandlers = new HashMap<>();
+    // The transformer processes classes in parallel (ForkJoinPool via AsyncHelper), so this cache is
+    // touched from multiple threads. A plain HashMap.computeIfAbsent throws ConcurrentModificationException
+    // under concurrent modification (and also when the mapping function re-enters this method).
+    private final Map<ClassLookup, InheritanceHandler> inheritanceHandlers = new ConcurrentHashMap<>();
 
     public PatchEnvironmentImpl(
         RefmapHolder refmapHolder,
@@ -77,7 +80,15 @@ public final class PatchEnvironmentImpl implements PatchEnvironment {
 
     @Override
     public InheritanceHandler inheritanceHandler(ClassLookup lookup) {
-        return this.inheritanceHandlers.computeIfAbsent(lookup, InheritanceHandler::new);
+        // get-then-putIfAbsent instead of computeIfAbsent: the handler constructor can re-enter this
+        // method, which ConcurrentHashMap.computeIfAbsent would reject as a recursive update.
+        InheritanceHandler existing = this.inheritanceHandlers.get(lookup);
+        if (existing != null) {
+            return existing;
+        }
+        InheritanceHandler created = new InheritanceHandler(lookup);
+        InheritanceHandler prev = this.inheritanceHandlers.putIfAbsent(lookup, created);
+        return prev != null ? prev : created;
     }
 
     @Override
