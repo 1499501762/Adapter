@@ -65,6 +65,15 @@ public class MixinParser {
             properties.setProperty(ControlKeys.TARGET_CLASS, targetClass);
             properties.setProperty(ControlKeys.RETURN_TYPE, Type.getReturnType(method.desc));
             properties.setProperty(SpecialKeys.STATIC, MethodHelper.isStatic(method));
+            // @Overwrite / @Invoker name no "method": their target is derived from the mixin method
+            // itself. Set the qualifier so postProcessMixin below can complete the descriptor from the
+            // dirty target class, exactly like an annotation that omitted its descriptor.
+            if (!properties.hasProperty(MixinKeys.TARGET_METHOD)) {
+                MethodQualifier derived = mixinType.deriveTarget(properties, method);
+                if (derived != null) {
+                    properties.setProperty(MixinKeys.TARGET_METHOD, derived);
+                }
+            }
             if (!postProcessMixin(properties, environment)) {
                 continue;
             }
@@ -102,6 +111,21 @@ public class MixinParser {
             List<MethodNode> targets = dirtyTarget.methods.stream()
                 .filter(m -> target.matches(MethodQualifier.create(m)))
                 .toList();
+
+            // Fall back to the superclass chain. An injector may name a method the mixin's target class only
+            // INHERITS - carve's @Redirect(method = "causeExtraKnockback") on @Mixin(Player.class), where the
+            // method is declared on LivingEntity, is the reference case. Mixin itself resolves the target
+            // through the hierarchy, so mirroring that here is what lets the descriptor be completed (and the
+            // mixin stop being reported as an unexplained failure).
+            for (ClassNode cls = dirtyTarget; targets.isEmpty() && cls.superName != null; ) {
+                ClassNode parent = environment.dirtyClassLookup().getClass(cls.superName).orElse(null);
+                if (parent == null) break;
+                targets = parent.methods.stream()
+                    .filter(m -> target.matches(MethodQualifier.create(m)))
+                    .toList();
+                cls = parent;
+            }
+
             if (targets.size() == 1) {
                 properties.setProperty(MixinKeys.TARGET_METHOD, MethodQualifier.create(targets.getFirst()));
             }

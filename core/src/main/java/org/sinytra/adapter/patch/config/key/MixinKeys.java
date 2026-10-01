@@ -43,7 +43,13 @@ public class MixinKeys {
         .build();
     public static final PropertyKey<ConstantData> TARGET_CONSTANT = PropertyKey.<ConstantData>builder("constant")
         .parser((value, mapper) -> {
+            // Same null guard as TARGET_AT above. Without it, a @ModifyConstant whose "constant" is not a single
+            // annotation (a repeated/array form, or a plain int) reached new AnnotationHandle(null) and blew up
+            // with a NullPointerException inside MixinParser - which aborted the whole transform for that mod
+            // instead of simply skipping the property. Reference case: shuttfup's DefaultLANPort.
             AnnotationNode node = ControlKeys.parseSingle(value, AnnotationNode.class);
+            if (node == null) return null;
+
             AnnotationHandle handle = new AnnotationHandle(node);
             return ConstantData.parse(handle).orElse(null);
         })
@@ -51,11 +57,22 @@ public class MixinKeys {
         .build();
     // Mixin data
     public static final PropertyKey<Boolean> CANCELLABLE = PropertyKey.create("cancellable", Boolean.class);
+    /** {@code @Accessor}/{@code @Invoker} field or method name. */
+    public static final PropertyKey<String> ACCESSOR_VALUE = PropertyKey.create("value", String.class);
     public static final PropertyKey<Integer> INDEX = PropertyKey.create("index", Integer.class);
     public static final PropertyKey<Integer> ORDINAL = PropertyKey.create("ordinal", Integer.class);
     public static final PropertyKey<Boolean> ARGS_ONLY = PropertyKey.create("argsOnly", Boolean.class);
     public static final PropertyKey<SliceData> SLICE = PropertyKey.<SliceData>builder("slice")
-        .parser((value, mapper) -> SliceData.parse(new AnnotationHandle((AnnotationNode) value), mapper))
+        // ASM stores a repeated annotation as a List, so the bare cast (AnnotationNode) value threw
+        // ClassCastException: ArrayList cannot be cast to AnnotationNode, aborting the transform for the whole mod.
+        // parseSingle unwraps the single-element case and yields null otherwise ("no slice"; the multi-element
+        // form is handled by SLICES above). A/B verified: this does NOT change carpet's outcome - the
+        // onBlockBroken/onExplosionDone strip count stayed identical with and without this change.
+        // Reference case: cookeymod (CRASH -> 61/7).
+        .parser((value, mapper) -> {
+            AnnotationNode node = ControlKeys.parseSingle(value, AnnotationNode.class);
+            return node == null ? null : SliceData.parse(new AnnotationHandle(node), mapper);
+        })
         .serializer(SliceData::toAnnotationNode)
         .build();
     public static final PropertyKey<List<SliceData>> SLICES = PropertyKey.<List<SliceData>>builder("slice")
@@ -68,3 +85,4 @@ public class MixinKeys {
     public static final PropertyKey<LocalCapture> LOCALS = PropertyKey.create("locals", LocalCapture.class);
     public static final PropertyKey<Integer> REQUIRE = PropertyKey.create("require", Integer.class);
 }
+
